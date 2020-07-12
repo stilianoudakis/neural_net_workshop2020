@@ -1,0 +1,225 @@
+---
+title: "Deep Learning Workshop VCU Summer 2020"
+author: "Spiro Stilianoudakis"
+date: "7/12/2020"
+output: 
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Loading required R packages
+
+The following packages are required to perform this analysis:
+
+```{r, message=FALSE}
+# if (!requireNamespace("BiocManager", quietly=TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install("preciseTAD")
+
+#devtools::install_github("stilianoudakis/preciseTAD")
+library(preciseTAD)
+
+library(caret)
+library(ggplot2)
+library(ggpubr)
+library(knitr)
+library(keras)
+use_session_with_seed(123)
+```
+
+# Obtaing the data
+
+`preciseTAD` allows users to obtain a data matrix necessary for machine learning or deep learning simply by providing the coordinates of ground truth TAD boundaries and a list of ChIP-seq peaks. The `preciseTAD::createTADdata` allows users to specify the size of the genomic bins, the type of feature space, and the chromosomes to use for training and testing. A list of 26 ChIP-seq defined transcription factor binding sites (TFBS) are already provided by `precise` and can be loaded into the R environment. Since we are using boundary coordinates called by [ARROWHEAD](https://github.com/aidenlab/juicer/wiki/Arrowhead) at 50 kb, we will set `resolution=50000`. Here, we will be defining two versions of the data, one with an overlap counts feature space (`featureType="oc"`), and one with a (log2) distance feature space (`featureType="distance"`). Note, `preciseTAD::createTADdata` already performs the log2 normalization for distances. Finally, we will be training on CHR1-21 and testing on CHR22.
+
+```{r, warning = FALSE, message = FALSE, results="hide"}
+# loading in the list of TFBS
+data("tfbsList")
+names(tfbsList)
+
+# loading in ARROWHEAD TAD boundaries 
+domains <- read.table("./data/GM12878_domain_data_50000.b.txt", header=F)
+# extracting unique boundary coordinates
+bounds.GR <- extractBoundaries(domains.mat=domains, 
+                                     preprocess=FALSE, 
+                                     CHR=paste0("CHR", c(1:8,10:22)), 
+                                     resolution=50000)
+
+# View unique boundaries
+bounds.GR
+
+# creating overlap count data
+
+#tadData_oc <- createTADdata(bounds.GR=bounds.GR,
+#                                  resolution=50000,
+#                                  genomicElements.GR=tfbsList,
+#                                  featureType="oc",
+#                                  resampling="rus",
+#                                  trainCHR=paste0("CHR",c(1:8,10:21)),
+#                                  predictCHR="CHR22",
+#                                  seed=123)
+tadData_oc <- readRDS("./data/tadData_oc.rds")
+
+# creating distance data
+
+#tadData_distance <- createTADdata(bounds.GR=bounds.GR,
+#                         resolution=50000,
+#                         genomicElements.GR=tfbsList,
+#                         featureType="distance",
+#                         resampling="rus",
+#                         trainCHR=paste0("CHR",c(1:8,10:21)),
+#                         predictCHR="CHR22",
+#                        seed=123)
+tadData_distance <- readRDS("./data/tadData_distance.rds")
+
+## confirming that the two data sets have same dimensions and response
+all.equal(dim(tadData_oc[[1]]),dim(tadData_distance[[1]])) #training X
+
+all.equal(table(tadData_oc[[1]]$y),table(tadData_distance[[1]]$y)) #training Y
+
+all.equal(dim(tadData_oc[[2]]),dim(tadData_distance[[2]])) #testing X
+
+all.equal(table(tadData_oc[[2]]$y),table(tadData_distance[[2]]$y)) #testing Y
+
+```
+
+# Reformatting/Normalizing the data
+
+Training and testing data must be in matrix/array format in order to perform deep learning using Keras. Likewise, the response vector must also be numeric. Furthermore, it is advised to normalize data prior to implementing neural networks. For count data, typically you want values to be between 0 and 1. For nominal data, center and scaling is usually prefered. Thus, we opt for a min/max normalization of the count data. Since the distances have already been normalized using a log2 transformation, we choose not to further normalize.
+
+```{r, warning = FALSE, message = FALSE}
+# reformating data
+## count data
+train_x_oc <- as.matrix(tadData_oc[[1]][,-1])
+train_y_oc <- as.numeric(tadData_oc[[1]][,1])-1
+test_x_oc <- as.matrix(tadData_oc[[2]][,-1])
+test_y_oc <- as.numeric(tadData_oc[[2]][,1])-1
+
+## distance data
+train_x_distance <- as.matrix(tadData_distance[[1]][,-1])
+train_y_distance <- as.numeric(tadData_distance[[1]][,1])-1
+test_x_distance <- as.matrix(tadData_distance[[2]][,-1])
+test_y_distance <- as.numeric(tadData_distance[[2]][,1])-1
+
+# normalizing data
+pp_train <- preProcess(train_x_oc, method = "range")
+train_x_oc <- predict(pp_train, train_x_oc)
+
+pp_test <- preProcess(test_x_oc, method = "range")
+test_x_oc <- predict(pp_test, test_x_oc)
+```
+
+# Building a fully connected, sequential (feed forward) neural network
+
+Here we build two fully connected, sequential neural networks, one for each feature space type. The input shape in the first layer is 26 for both, representing the initial number of variables fed into the first hidden layer. We opt for 3 fully connect (dense) hidden layers, with 10 nodes in each layer. We utilize the "relu" activation function (rectified linear unit) for the 3 hidden layers and a sigmoid activation function for the last layer to ensure our predictions are fitted between 0 and 1. Additionally, we consider two techniques to mitigate overfitting. First, we consider both $L_{1}$ and $L_{2}$ regularization on the weights of the nodes in the each layer. Likewise we add 20% dropout at each layer. We keep the standard "rmsprop" as our optimizer. However, we change the loss and metrics to "binary_crossentropy" and "accuracy" respectively since we are working with binary classification. Finally, we train on 50 epochs with a batch size of 500 for each iteration. 
+
+## Overlap counts feature space
+
+```{r}
+model_oc <- keras_model_sequential() %>%
+    layer_dense(units = 10, 
+                kernel_regularizer = regularizer_l1_l2(l1 = 0.001, l2 = 0.001), 
+                activation = "relu", 
+                input_shape = c(26)) %>%
+    layer_dropout(rate = 0.2) %>% 
+    layer_dense(units = 10, 
+                kernel_regularizer = regularizer_l1_l2(l1 = 0.001, l2 = 0.001),  
+                activation = "relu") %>%
+    layer_dropout(rate = 0.2) %>% 
+    layer_dense(units = 10, 
+                kernel_regularizer = regularizer_l1_l2(l1 = 0.001, l2 = 0.001),  
+                activation = "relu") %>%
+    layer_dropout(rate = 0.2) %>% 
+    layer_dense(units = 1, activation = "sigmoid")
+
+model_oc %>% compile(
+    optimizer = "rmsprop",
+    loss = "binary_crossentropy",
+    metrics = c("accuracy")
+)
+
+oc_hist <- model_oc %>% fit(
+    train_x_oc,
+    train_y_oc,
+    epochs = 50,
+    batch_size = 500,
+    validation_split = .3,
+    verbose = 0
+)
+
+```
+
+
+## Distance feature space
+
+```{r}
+model_dist <- keras_model_sequential() %>%
+    layer_dense(units = 10, 
+                kernel_regularizer = regularizer_l1_l2(l1 = 0.001, l2 = 0.001), 
+                activation = "relu", 
+                input_shape = c(26)) %>%
+    layer_dropout(rate = 0.2) %>% 
+    layer_dense(units = 10, 
+                kernel_regularizer = regularizer_l1_l2(l1 = 0.001, l2 = 0.001),  
+                activation = "relu") %>%
+    layer_dropout(rate = 0.2) %>% 
+    layer_dense(units = 10, 
+                kernel_regularizer = regularizer_l1_l2(l1 = 0.001, l2 = 0.001),  
+                activation = "relu") %>%
+    layer_dropout(rate = 0.2) %>% 
+    layer_dense(units = 1, activation = "sigmoid")
+
+model_dist %>% compile(
+    optimizer = "rmsprop",
+    loss = "binary_crossentropy",
+    metrics = c("accuracy")
+)
+
+dist_hist <- model_dist %>% fit(
+    train_x_distance,
+    train_y_distance,
+    epochs = 50,
+    batch_size = 500,
+    validation_split = .3,
+    verbose = 0
+)
+
+```
+
+# Model Evaluation
+
+From the feature type specific confusion matrices in Tables 1-2, we see that the neural network built on a distance type feature space outperformed the overlap count feature space, with an accuracy of 0.774 versus 0.604.
+
+```{r, echo=FALSE, message=FALSE, fig.cap="Figure 1. Training and Validation metrics for neural networks built using an overlap counts feature space (A) and a distance feature space (B)"}
+ocp <- plot(oc_hist)
+dp <- plot(dist_hist)
+
+ggarrange(ocp,dp, ncol = 2, labels = "AUTO", common.legend = TRUE, legend = "top")
+```
+
+## Overlap counts feature space
+
+```{r, echo=FALSE}
+pred_oc <- model_oc %>% predict(test_x_oc)
+pred_oc <- ifelse(pred_oc < .5,0,1)
+
+kable(table(pred_oc, test_y_oc), caption = "Table 1. Confusion matrix for NNet built on overlap counts feature space.", format = "html", table.attr = "style='width:50%;'")
+
+paste0("Accuracy: ", round((table(pred_oc, test_y_oc)[1,1]+table(pred_oc, test_y_oc)[2,2])/sum(table(pred_oc, test_y_oc)),3))
+```
+
+## Distance feature space
+
+```{r, echo=FALSE}
+pred_dist <- model_dist %>% predict(test_x_distance)
+pred_dist <- ifelse(pred_dist < .5,0,1)
+
+kable(table(pred_dist, test_y_distance), caption = "Table 2. Confusion matrix for NNet built on distance feature space.", format = "html", table.attr = "style='width:50%;'")
+
+paste0("Accuracy: ", round((table(pred_dist, test_y_distance)[1,1]+table(pred_dist, test_y_distance)[2,2])/sum(table(pred_dist, test_y_distance)),3))
+```
+
