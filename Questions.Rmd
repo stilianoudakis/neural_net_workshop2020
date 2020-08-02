@@ -1,0 +1,52 @@
+---
+title: "Questions"
+author: "Spiro Stilianoudakis"
+date: "8/2/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Document containing questions and answers
+
+## Jul 30, 2020 Saagar Sheth
+
+### Question
+
+I'm a little confused as to what the input and output dimensions are for the neural network. 
+
+What would the input_dim be and the output_dim as well? For the history function, are there any specifications on the batch_size for your code? Also, how should I split validation_split? You did chromosome 22, but I'm not sure how to replicate that with a neural network. 
+
+model <- keras_model_sequential() %>%
+  layer_embedding(input_dim = 64, output_dim = 32) %>%
+  layer_simple_rnn(units = 32) %>%
+  layer_dense(units = 1, activation = "sigmoid")
+model %>% compile(
+  optimizer = "rmsprop",
+  loss = "binary_crossentropy",
+  metrics = c("acc")
+)
+history <- model %>% fit(
+  input_train, y_train,
+  epochs = 10,
+  batch_size = 128,
+  validation_split = 0.2
+)
+
+plot(history)
+
+### Answer
+
+I would skip to looking specifically at LSTM (subset of RNNs). Simply RNNs are good for sequence/text data, not great for the type of 2D data we have here. That is why there is layer_embedding part there. This is not necessary for our problem. Look at pg 191 of the text.
+
+One thing to consider first:
+
+   * After reading more into LSTM myself, it is necessary for the rows of the data to be dependent on the previous row (as is the case with time series data). For this, we need to specify `resampling="none"` in the `preciseTAD::createTADdata` function (the function that creates your training and testing data sets). This assures us that no resampling or shuffling of data occurs. 
+   
+Regarding the question about batch_size, no there is no specification. It has to be played around with. Larger values require more memory to be stored in R, smaller values give less precise results.
+
+For validation_split, it means how much of the training data is reserved for validation. In my example CHR22 was used for testing, not validation. If validation_split = 0.2, 20% of the training is used to validate, prior to testing
+
+
