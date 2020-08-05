@@ -148,13 +148,13 @@ test_gen <- generator(
 )
 
 # How many steps to draw from val_gen in order to see the entire validation set
-val_steps <- (52561 - 42562 - lookback) / batch_size
+val_steps <- (52562 - 42562 - lookback) / batch_size
 
 # How many steps to draw from test_gen in order to see the entire test set
-test_steps <- (nrow(all_tad_data) - 52561 - lookback) / batch_size
+test_steps <- (nrow(all_tad_data) - 52562 - lookback) / batch_size
 
 model <- keras_model_sequential() %>%
-    layer_lstm(units = 10, input_shape = c(50, 26)) %>%
+    layer_lstm(units = 10, input_shape = c(50, 27)) %>%
     layer_dense(units = 10, activation = "relu") %>%
     layer_dense(units = 5, activation = "relu") %>%
     layer_dense(units = 1, activation = "sigmoid")
