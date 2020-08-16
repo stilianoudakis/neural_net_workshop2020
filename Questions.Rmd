@@ -13,6 +13,15 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ## Jul 30, 2020 Saagar Sheth
 
+### Question 3
+I tried the 6.3 example about the temperature prediction this week, and I actually ran into a similar problem, so I'm not sure what is wrong. It may not be the code. The line that originally gave me an error:
+model <- keras_model_sequential() %>% 
+  layer_flatten(input_shape = c(lookback / step, dim(data)[-1])) %>% 
+  layer_dense(units = 32, activation = "relu") %>% 
+  layer_dense(units = 1)
+
+It said "Error: " and that's all, so I ran the same line again, but it worked the second time but I have a feeling that it didn't really work. Then, when I ran the history function, I had the same issue where it just didn't load at all. It may not be the code, but instead an issue with how I'm running the code or the laptop. But I am copying and pasting so what could be the issue? Is it the input shape for even the temperature example?
+
 ### Question 2
 As we predicted, layer_flatten had similar results. I was unable to run it at the same part in the history function. Again, it said Epoch 1/5, Step 1/20 and just kept loading. I think the error may not be in the model since both lstm and flatten had the same issue. We should continue using flatten for now I think, but where could the error be that is preventing this from running? 
 Possibly an error in something that we are inputting into the model such as all_tad_data?
